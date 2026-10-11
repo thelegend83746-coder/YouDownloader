@@ -50,7 +50,7 @@ class VideoRepository(private val context: Context) {
      * Fetch video preview from URL using YouTubeExtractor
      */
     suspend fun fetchPreview(url: String): Result<VideoPreviewInfo> {
-        return YouTubeExtractor.fetchVideoInfo(url)
+        return YouTubeExtractor.fetchVideoInfo(context, url)
     }
 
     /**
