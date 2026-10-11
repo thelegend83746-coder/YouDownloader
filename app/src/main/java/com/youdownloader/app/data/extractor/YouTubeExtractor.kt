@@ -25,11 +25,9 @@ import kotlin.coroutines.resume
 
 object YouTubeExtractor {
 
-    private const val INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
-
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
         .followRedirects(true)
         .build()
 
@@ -52,10 +50,11 @@ object YouTubeExtractor {
 
     /**
      * Primary entry point to fetch video metadata & streams.
-     * Uses 3-tier extraction:
-     * 1. Official YouTube oEmbed (100% reliable metadata)
-     * 2. Direct Android VR InnerTube stream parser
-     * 3. Headless in-app WebView stream interception (bypasses BotGuard/PO-Token naturally)
+     * Uses resilient multi-tier extraction:
+     * 1. Official YouTube Android Mobile Client InnerTube Protocol (zero API key needed)
+     * 2. Fallback Android Version InnerTube Client
+     * 3. Fallback Headless in-app WebView stream interception
+     * 4. YouTube Official oEmbed metadata enhancement
      */
     suspend fun fetchVideoInfo(context: Context, rawUrl: String): Result<VideoPreviewInfo> = withContext(Dispatchers.IO) {
         try {
@@ -64,62 +63,175 @@ object YouTubeExtractor {
                     IllegalArgumentException("Invalid YouTube URL. Please enter a valid video or shorts link.")
                 )
 
-            // Step 1: Instant & guaranteed metadata from YouTube Official oEmbed
-            val oEmbedMeta = fetchOEmbedMetadata(videoId)
+            // Step 1: Try direct Android Client InnerTube profiles
+            var parsedInfo = resolveInnerTubeStreams(videoId, rawUrl)
 
-            // Step 2: Try direct fast InnerTube streams
-            var formats = resolveDirectInnerTubeStreams(videoId)
-
-            // Step 3: If direct stream extraction was blocked by YouTube bot-guard, use Headless WebView
-            if (formats.isEmpty()) {
-                val webViewStreams = withTimeoutOrNull(9000L) {
+            // Step 2: If InnerTube was blocked or empty, fallback to Headless WebView
+            if (parsedInfo == null || parsedInfo.formats.isEmpty()) {
+                val webViewStreams = withTimeoutOrNull(10000L) {
                     extractStreamsViaHeadlessWebView(context, videoId)
                 }
                 if (!webViewStreams.isNullOrEmpty()) {
-                    formats = webViewStreams
+                    val oEmbed = fetchOEmbedMetadata(videoId)
+                    val title = oEmbed?.optString("title") ?: "YouTube Video"
+                    val channel = oEmbed?.optString("author_name") ?: "YouTube Channel"
+                    val thumb = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
+                    parsedInfo = createPreviewInfo(videoId, rawUrl, title, channel, 0L, thumb, webViewStreams)
                 }
             }
 
-            // Step 4: If still no formats, attempt Web HTML fallback
-            if (formats.isEmpty()) {
-                formats = resolveWebHtmlStreams(videoId)
-            }
-
-            val title = oEmbedMeta?.optString("title") ?: "YouTube Video"
-            val channel = oEmbedMeta?.optString("author_name") ?: "YouTube Channel"
-            val thumbnail = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
-
-            val availableQualities = mutableListOf<VideoQuality>()
-            if (formats.any { it.height >= 1080 && it.hasVideo }) availableQualities.add(VideoQuality.Q_1080P)
-            if (formats.any { it.height >= 720 && it.hasVideo }) availableQualities.add(VideoQuality.Q_720P)
-            if (formats.any { it.height >= 480 && it.hasVideo }) availableQualities.add(VideoQuality.Q_480P)
-            if (formats.any { it.height >= 360 && it.hasVideo }) availableQualities.add(VideoQuality.Q_360P)
-            if (formats.any { it.hasAudio }) availableQualities.add(VideoQuality.AUDIO_ONLY)
-
-            if (availableQualities.isEmpty()) {
-                availableQualities.add(VideoQuality.Q_720P)
-                availableQualities.add(VideoQuality.Q_360P)
-            }
-
-            Result.success(
-                VideoPreviewInfo(
-                    youtubeId = videoId,
-                    originalUrl = rawUrl,
-                    title = title,
-                    channel = channel,
-                    durationMs = 0L,
-                    thumbnailUrl = thumbnail,
-                    availableQualities = availableQualities,
-                    formats = formats
+            if (parsedInfo == null || parsedInfo.formats.isEmpty()) {
+                return@withContext Result.failure(
+                    IllegalStateException("Could not extract streams. Please check your internet connection or video visibility.")
                 )
-            )
+            }
+
+            Result.success(parsedInfo)
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
     /**
-     * Official YouTube oEmbed Metadata API (Never fails, zero API key needed)
+     * Attempts extraction using native InnerTube Android profiles.
+     * Zero API key required - mimics official YouTube Android app player requests.
+     */
+    private fun resolveInnerTubeStreams(videoId: String, originalUrl: String): VideoPreviewInfo? {
+        val clientProfiles = listOf(
+            InnerTubeProfile(
+                clientName = "ANDROID",
+                clientVersion = "20.10.35",
+                androidSdkVersion = 34,
+                userAgent = "com.google.android.youtube/20.10.35 (Linux; U; Android 14; en_US; Pixel 8 Pro Build/UQ1A.240205.004) gzip"
+            ),
+            InnerTubeProfile(
+                clientName = "ANDROID",
+                clientVersion = "21.26.364",
+                androidSdkVersion = 34,
+                userAgent = "com.google.android.youtube/21.26.364 (Linux; U; Android 14; en_US; Pixel 8 Pro Build/UQ1A.240205.004) gzip"
+            ),
+            InnerTubeProfile(
+                clientName = "ANDROID_VR",
+                clientVersion = "1.61.48",
+                androidSdkVersion = 32,
+                userAgent = "Mozilla/5.0 (Linux; Android 12; Quest 3)"
+            )
+        )
+
+        for (profile in clientProfiles) {
+            try {
+                val endpoint = "https://www.youtube.com/youtubei/v1/player"
+                val payload = JSONObject().apply {
+                    put("context", JSONObject().apply {
+                        put("client", JSONObject().apply {
+                            put("clientName", profile.clientName)
+                            put("clientVersion", profile.clientVersion)
+                            if (profile.androidSdkVersion > 0) {
+                                put("androidSdkVersion", profile.androidSdkVersion)
+                            }
+                            put("hl", "en")
+                            put("gl", "US")
+                        })
+                    })
+                    put("videoId", videoId)
+                    put("contentCheckOk", true)
+                    put("racyCheckOk", true)
+                }
+
+                val request = Request.Builder()
+                    .url(endpoint)
+                    .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .header("User-Agent", profile.userAgent)
+                    .build()
+
+                val response = httpClient.newCall(request).execute()
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: continue
+                    val json = JSONObject(body)
+                    val status = json.optJSONObject("playabilityStatus")?.optString("status")
+                    if (status == "OK") {
+                        val preview = parseInnerTubeResponse(json, videoId, originalUrl)
+                        if (preview != null && preview.formats.isNotEmpty()) {
+                            return preview
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Try next profile
+            }
+        }
+        return null
+    }
+
+    private data class InnerTubeProfile(
+        val clientName: String,
+        val clientVersion: String,
+        val androidSdkVersion: Int,
+        val userAgent: String
+    )
+
+    private fun parseInnerTubeResponse(
+        json: JSONObject,
+        videoId: String,
+        originalUrl: String
+    ): VideoPreviewInfo? {
+        val videoDetails = json.optJSONObject("videoDetails")
+        val title = videoDetails?.optString("title")?.takeIf { it.isNotBlank() } ?: "YouTube Video"
+        val channel = videoDetails?.optString("author")?.takeIf { it.isNotBlank() } ?: "YouTube Channel"
+        val lengthSeconds = videoDetails?.optString("lengthSeconds")?.toLongOrNull() ?: 0L
+        val durationMs = lengthSeconds * 1000L
+
+        var thumbnailUrl = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
+        val thumbnails = videoDetails?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+        if (thumbnails != null && thumbnails.length() > 0) {
+            val bestThumb = thumbnails.getJSONObject(thumbnails.length() - 1)
+            thumbnailUrl = bestThumb.optString("url", thumbnailUrl)
+        }
+
+        val streamingData = json.optJSONObject("streamingData") ?: return null
+        val formatsList = mutableListOf<StreamFormat>()
+        parseStreamingData(streamingData, formatsList)
+
+        if (formatsList.isEmpty()) return null
+
+        return createPreviewInfo(videoId, originalUrl, title, channel, durationMs, thumbnailUrl, formatsList)
+    }
+
+    private fun createPreviewInfo(
+        videoId: String,
+        originalUrl: String,
+        title: String,
+        channel: String,
+        durationMs: Long,
+        thumbnailUrl: String,
+        formatsList: List<StreamFormat>
+    ): VideoPreviewInfo {
+        val availableQualities = mutableListOf<VideoQuality>()
+        if (formatsList.any { it.height >= 1080 && it.hasVideo }) availableQualities.add(VideoQuality.Q_1080P)
+        if (formatsList.any { it.height >= 720 && it.hasVideo }) availableQualities.add(VideoQuality.Q_720P)
+        if (formatsList.any { it.height >= 480 && it.hasVideo }) availableQualities.add(VideoQuality.Q_480P)
+        if (formatsList.any { it.height >= 360 && it.hasVideo }) availableQualities.add(VideoQuality.Q_360P)
+        if (formatsList.any { it.hasAudio }) availableQualities.add(VideoQuality.AUDIO_ONLY)
+
+        if (availableQualities.isEmpty()) {
+            availableQualities.add(VideoQuality.Q_720P)
+            availableQualities.add(VideoQuality.Q_360P)
+        }
+
+        return VideoPreviewInfo(
+            youtubeId = videoId,
+            originalUrl = originalUrl,
+            title = title,
+            channel = channel,
+            durationMs = durationMs,
+            thumbnailUrl = thumbnailUrl,
+            availableQualities = availableQualities,
+            formats = formatsList
+        )
+    }
+
+    /**
+     * Official YouTube oEmbed Metadata API
      */
     private fun fetchOEmbedMetadata(videoId: String): JSONObject? {
         return try {
@@ -139,71 +251,8 @@ object YouTubeExtractor {
     }
 
     /**
-     * Fast direct InnerTube stream resolution via Android VR client
-     */
-    private fun resolveDirectInnerTubeStreams(videoId: String): List<StreamFormat> {
-        val formatsList = mutableListOf<StreamFormat>()
-        try {
-            val endpoint = "https://www.youtube.com/youtubei/v1/player?key=$INNERTUBE_KEY"
-            val payload = JSONObject().apply {
-                put("context", JSONObject().apply {
-                    put("client", JSONObject().apply {
-                        put("clientName", "ANDROID_VR")
-                        put("clientVersion", "1.56.21")
-                        put("hl", "en")
-                        put("gl", "US")
-                    })
-                })
-                put("videoId", videoId)
-            }
-            val request = Request.Builder()
-                .url(endpoint)
-                .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 10) OculusQuest2")
-                .build()
-
-            val response = httpClient.newCall(request).execute()
-            if (response.isSuccessful) {
-                val body = response.body?.string()
-                if (body != null) {
-                    val json = JSONObject(body)
-                    parseStreamingData(json.optJSONObject("streamingData"), formatsList)
-                }
-            }
-        } catch (_: Exception) {}
-        return formatsList
-    }
-
-    /**
-     * Fallback Web HTML streaming formats
-     */
-    private fun resolveWebHtmlStreams(videoId: String): List<StreamFormat> {
-        val formatsList = mutableListOf<StreamFormat>()
-        try {
-            val url = "https://www.youtube.com/watch?v=$videoId"
-            val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
-                .build()
-            val response = httpClient.newCall(request).execute()
-            if (response.isSuccessful) {
-                val html = response.body?.string()
-                if (html != null) {
-                    val regex = Regex("""ytInitialPlayerResponse\s*=\s*(\{.+?\});""", RegexOption.DOT_MATCHES_ALL)
-                    val match = regex.find(html)
-                    if (match != null) {
-                        val json = JSONObject(match.groupValues[1])
-                        parseStreamingData(json.optJSONObject("streamingData"), formatsList)
-                    }
-                }
-            }
-        } catch (_: Exception) {}
-        return formatsList
-    }
-
-    /**
-     * Headless in-app WebView stream interception.
-     * Bypasses YouTube's BotGuard & PO-Token naturally by running real JavaScript in WebKit.
+     * Headless in-app WebView stream interception fallback.
+     * Loads the embed player and intercepts direct googlevideo playback URLs.
      */
     @SuppressLint("SetJavaScriptEnabled")
     private suspend fun extractStreamsViaHeadlessWebView(
@@ -230,7 +279,7 @@ object YouTubeExtractor {
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
                     settings.mediaPlaybackRequiresUserGesture = false
-                    settings.userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                    settings.userAgentString = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
 
                     webViewClient = object : WebViewClient() {
                         private val interceptedFormats = mutableListOf<StreamFormat>()
@@ -238,7 +287,6 @@ object YouTubeExtractor {
                         override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                             val reqUrl = request?.url?.toString() ?: ""
 
-                            // Catch direct video playback streams
                             if (reqUrl.contains("googlevideo.com/videoplayback")) {
                                 val mime = if (reqUrl.contains("mime=audio")) "audio/mp4" else "video/mp4"
                                 val isAudio = mime.startsWith("audio")
@@ -246,8 +294,8 @@ object YouTubeExtractor {
                                     StreamFormat(
                                         itag = if (isAudio) 140 else 18,
                                         mimeType = mime,
-                                        qualityLabel = if (isAudio) "Audio Only" else "720p (HD)",
-                                        height = if (isAudio) 0 else 720,
+                                        qualityLabel = if (isAudio) "Audio Only" else "360p",
+                                        height = if (isAudio) 0 else 360,
                                         bitrate = 128000L,
                                         contentLength = 0L,
                                         url = reqUrl,
@@ -264,7 +312,6 @@ object YouTubeExtractor {
                         }
 
                         override fun onPageFinished(view: WebView?, url: String?) {
-                            // Extract window.ytInitialPlayerResponse via JS
                             evaluateJavascript(
                                 "(function() { return (window.ytInitialPlayerResponse) ? JSON.stringify(window.ytInitialPlayerResponse.streamingData) : ''; })()"
                             ) { result ->
@@ -287,8 +334,7 @@ object YouTubeExtractor {
                         }
                     }
 
-                    // Load mobile watch page in headless webview
-                    loadUrl("https://m.youtube.com/watch?v=$videoId")
+                    loadUrl("https://www.youtube.com/embed/$videoId?autoplay=1")
                 }
 
                 continuation.invokeOnCancellation {
@@ -297,7 +343,7 @@ object YouTubeExtractor {
                         webView?.destroy()
                     } catch (_: Exception) {}
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 finishWith(emptyList())
             }
         }
@@ -315,7 +361,7 @@ object YouTubeExtractor {
             }
         }
 
-        // 2. Adaptive formats
+        // 2. Adaptive formats (Separate high quality video and audio streams)
         val adaptiveArray = streamingData.optJSONArray("adaptiveFormats")
         if (adaptiveArray != null) {
             for (i in 0 until adaptiveArray.length()) {
@@ -367,6 +413,10 @@ object YouTubeExtractor {
         )
     }
 
+    /**
+     * Resolves the best video and audio stream URLs for the selected quality.
+     * Guarantees sound: if chosen video stream does not have audio, pairs it with best audio stream.
+     */
     fun resolveStreamsForQuality(
         formats: List<StreamFormat>,
         targetQuality: VideoQuality
@@ -404,8 +454,10 @@ object YouTubeExtractor {
             return Pair(videoStream, null)
         }
 
+        // Separate audio stream to merge with video using MediaMuxer
         val audioStream = formats.filter { it.hasAudio && !it.hasVideo }
             .maxByOrNull { it.bitrate }
+            ?: formats.firstOrNull { it.hasAudio }
 
         return Pair(videoStream, audioStream)
     }
