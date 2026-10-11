@@ -1,0 +1,28 @@
+<resources>
+    <!-- Brand Primary Colors (Black & Red) -->
+    <color name="primary_red">#E50914</color>
+    <color name="primary_red_variant">#B80710</color>
+    <color name="secondary_crimson">#FF3B30</color>
+    <color name="accent_red">#FF4D4D</color>
+
+    <!-- Dark Theme Palette -->
+    <color name="dark_background">#0E0E10</color>
+    <color name="dark_surface">#18181C</color>
+    <color name="dark_surface_variant">#24242A</color>
+    <color name="dark_on_background">#FFFFFF</color>
+    <color name="dark_on_surface">#EDEDED</color>
+    <color name="dark_text_secondary">#9E9EA7</color>
+
+    <!-- Light Theme Palette -->
+    <color name="light_background">#F8F9FA</color>
+    <color name="light_surface">#FFFFFF</color>
+    <color name="light_surface_variant">#F1F3F5</color>
+    <color name="light_on_background">#111111</color>
+    <color name="light_on_surface">#222222</color>
+    <color name="light_text_secondary">#666666</color>
+
+    <!-- Status Colors -->
+    <color name="status_success">#34C759</color>
+    <color name="status_warning">#FF9500</color>
+    <color name="status_error">#FF3B30</color>
+</resources>

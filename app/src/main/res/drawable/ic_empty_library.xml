@@ -1,0 +1,31 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="120dp"
+    android:height="120dp"
+    android:viewportWidth="120"
+    android:viewportHeight="120">
+    <!-- Outer TV/Monitor Frame -->
+    <path
+        android:strokeColor="#33333E"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#18181C"
+        android:pathData="M20,25 L100,25 C104,25 107,28 107,32 L107,78 C107,82 104,85 100,85 L20,85 C16,85 13,82 13,78 L13,32 C13,28 16,25 20,25 Z" />
+    <!-- Stand -->
+    <path
+        android:strokeColor="#33333E"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M60,85 L60,98 M45,98 L75,98" />
+    <!-- Film reel / play outline in center -->
+    <path
+        android:fillColor="#E50914"
+        android:pathData="M52,43 L72,55 L52,67 Z" />
+    <!-- Download Arrow Accent -->
+    <path
+        android:strokeColor="#FF4D4D"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M85,65 L85,77 M80,72 L85,77 L90,72" />
+</vector>

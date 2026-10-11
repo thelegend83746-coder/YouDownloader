@@ -1,0 +1,62 @@
+<resources>
+    <string name="app_name">You Downloader</string>
+    <string name="tagline">Save YouTube videos for offline viewing</string>
+    
+    <!-- Navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_settings">Settings</string>
+    
+    <!-- Home Screen -->
+    <string name="add_download">Add Download</string>
+    <string name="paste_link_hint">Paste YouTube video link here…</string>
+    <string name="paste_button">Paste</string>
+    <string name="fetch_preview">Fetch Preview</string>
+    <string name="download_button">Download</string>
+    <string name="cancel_button">Cancel</string>
+    <string name="quality_selection">Select Quality:</string>
+    <string name="in_progress_title">Downloading</string>
+    <string name="downloads_title">Downloaded Videos</string>
+    <string name="empty_downloads_title">No videos downloaded yet</string>
+    <string name="empty_downloads_desc">Tap the + button above, paste a YouTube link, and save your favorite videos for offline playback.</string>
+    <string name="storage_space">Storage: %1$s free of %2$s</string>
+    
+    <!-- Player Screen -->
+    <string name="player_title">Offline Player</string>
+    <string name="share_video">Share Video</string>
+    <string name="delete_video">Delete</string>
+    <string name="delete_confirm_title">Delete Video?</string>
+    <string name="delete_confirm_desc">Are you sure you want to delete "%1$s"? The downloaded file will be permanently removed from your device.</string>
+    <string name="delete_action">Delete</string>
+    <string name="cancel_action">Cancel</string>
+    
+    <!-- Settings Screen -->
+    <string name="settings_title">Settings</string>
+    <string name="theme_section">Appearance</string>
+    <string name="theme_system">System Default</string>
+    <string name="theme_dark">Dark Mode (Red &amp; Black)</string>
+    <string name="theme_light">Light Mode</string>
+    
+    <string name="download_preferences">Download Preferences</string>
+    <string name="wifi_only">Download on Wi-Fi Only</string>
+    <string name="wifi_only_desc">Pause or delay downloads when connected to mobile data</string>
+    <string name="default_quality">Default Quality</string>
+    <string name="storage_location">Storage Location</string>
+    <string name="storage_location_desc">App-private storage: /Android/data/com.youdownloader.app/files/videos/</string>
+    
+    <string name="about_section">About &amp; Legal</string>
+    <string name="app_version">Version 1.0.0 (Build 1)</string>
+    <string name="developer_name">Developed with Kotlin &amp; Jetpack Compose</string>
+    <string name="legal_disclaimer_title">Content &amp; Policy Disclaimer</string>
+    <string name="legal_disclaimer_text">You Downloader is intended strictly for personal offline viewing of content you have the right to download (such as your own uploads, public domain, or Creative Commons licensed media). Downloading copyrighted content without authorization from the copyright holder is strictly prohibited by YouTube\'s Terms of Service and applicable law. Please use responsibly.</string>
+    <string name="licenses_title">Open Source Licenses</string>
+    
+    <!-- Status & Notifications -->
+    <string name="status_queued">Queued</string>
+    <string name="status_downloading">Downloading…</string>
+    <string name="status_paused">Paused</string>
+    <string name="status_completed">Completed</string>
+    <string name="status_failed">Failed</string>
+    
+    <string name="notification_channel_name">Video Downloads</string>
+    <string name="notification_channel_desc">Progress and status notifications for active video downloads</string>
+</resources>
