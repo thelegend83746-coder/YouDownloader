@@ -223,7 +223,7 @@ object DownloadEngine {
         val inputStream: InputStream = body.byteStream()
 
         val buffer = ByteArray(8192)
-        var bytesRead: Int
+        var bytesRead = 0
         var totalRead = if (isAppend) existingBytes else 0L
         var lastUpdateTime = 0L
 
