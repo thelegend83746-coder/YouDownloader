@@ -43,7 +43,7 @@ interface VideoDao {
     @Query("UPDATE videos SET download_status = :status, error_message = :error WHERE id = :id")
     suspend fun updateStatus(id: Long, status: DownloadStatus, error: String? = null)
 
-    @Query("UPDATE videos SET download_status = 'COMPLETED', file_path = :filePath, file_size_bytes = :fileSizeBytes, downloaded_at = :downloadedAt, progress_percent = 100 WHERE id = :id")
+    @Query("UPDATE videos SET download_status = 'COMPLETED', file_path = :filePath, file_size_bytes = :fileSizeBytes, downloaded_at = :downloadedAt, progress_percent = 100, error_message = NULL WHERE id = :id")
     suspend fun markCompleted(id: Long, filePath: String, fileSizeBytes: Long, downloadedAt: Long)
 
     @Query("UPDATE videos SET last_position_ms = :positionMs WHERE id = :id")

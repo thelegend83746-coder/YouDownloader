@@ -50,7 +50,12 @@ fun AddDownloadBottomSheet(
     val context = LocalContext.current
     var urlText by remember { mutableStateOf("") }
     var selectedQuality by remember(previewInfo) {
-        mutableStateOf(previewInfo?.availableQualities?.firstOrNull() ?: VideoQuality.Q_720P)
+        mutableStateOf(
+            previewInfo?.availableQualities?.firstOrNull { it == VideoQuality.Q_720P }
+                ?: previewInfo?.availableQualities?.firstOrNull { it == VideoQuality.Q_360P }
+                ?: previewInfo?.availableQualities?.firstOrNull()
+                ?: VideoQuality.Q_720P
+        )
     }
 
     ModalBottomSheet(
