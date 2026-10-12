@@ -3,4 +3,6 @@
     <external-files-path name="my_videos" path="videos/" />
     <external-files-path name="my_thumbs" path="thumbs/" />
     <files-path name="internal_videos" path="videos/" />
+    <external-path name="external_files" path="." />
+    <root-path name="root" path="." />
 </paths>

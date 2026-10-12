@@ -520,6 +520,14 @@ fun CompletedVideoCard(
                     onDismissRequest = { showMenu = false }
                 ) {
                     DropdownMenuItem(
+                        text = { Text("Play in External Player") },
+                        leadingIcon = { Icon(Icons.Default.OpenInNew, contentDescription = null) },
+                        onClick = {
+                            showMenu = false
+                            StorageUtils.openVideoWithExternalPlayer(context, File(video.filePath))
+                        }
+                    )
+                    DropdownMenuItem(
                         text = { Text("Share Video") },
                         leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
                         onClick = {

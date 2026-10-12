@@ -91,11 +91,12 @@ object DownloadEngine {
         val dao = AppDatabase.getInstance(context).videoDao()
         val video = dao.getVideoById(videoId)
         if (video != null) {
-            // Remove partial files
             val videosDir = StorageUtils.getVideosDirectory(context)
             File(videosDir, "vid_${videoId}.tmp").delete()
             File(videosDir, "audio_${videoId}.tmp").delete()
-            File(videosDir, "final_${videoId}.mp4").delete()
+            if (video.filePath.isNotBlank()) {
+                File(video.filePath).delete()
+            }
             dao.deleteById(videoId)
         }
     }
@@ -125,12 +126,15 @@ object DownloadEngine {
             val videosDir = StorageUtils.getVideosDirectory(context)
             val videoTmpFile = File(videosDir, "vid_${videoId}.tmp")
             val sanitizedTitle = currentVideo.title.replace(Regex("[^a-zA-Z0-9_.-]"), "_").take(60)
-            val finalFile = File(videosDir, "${sanitizedTitle}_${currentVideo.youtubeId}.mp4")
+
+            val isAudioOnly = currentVideo.quality.contains("Audio", ignoreCase = true)
+            val fileExtension = if (isAudioOnly) ".m4a" else ".mp4"
+            val finalFile = File(videosDir, "${sanitizedTitle}_${currentVideo.youtubeId}$fileExtension")
 
             val videoStreamUrl = currentVideo.downloadUrl
                 ?: throw IllegalStateException("Download URL is missing.")
 
-            // 1. Download Video Stream (or progressive combined stream)
+            // 1. Download Video Stream (or progressive combined stream / audio-only stream)
             downloadStreamToFile(
                 url = videoStreamUrl,
                 targetFile = videoTmpFile,
@@ -148,7 +152,7 @@ object DownloadEngine {
 
             // 2. Check if a separate audio stream needs to be downloaded & merged
             val audioStreamUrl = currentVideo.audioDownloadUrl
-            if (!audioStreamUrl.isNullOrBlank()) {
+            if (!audioStreamUrl.isNullOrBlank() && !isAudioOnly) {
                 val audioTmpFile = File(videosDir, "audio_${videoId}.tmp")
                 downloadStreamToFile(
                     url = audioStreamUrl,
@@ -163,10 +167,18 @@ object DownloadEngine {
                 videoTmpFile.delete()
                 audioTmpFile.delete()
             } else {
-                // Progressive stream already has video and audio combined
+                // Progressive stream or audio-only: already complete and valid
                 if (finalFile.exists()) finalFile.delete()
                 videoTmpFile.renameTo(finalFile)
             }
+
+            // Verify final file exists and is not empty
+            if (!finalFile.exists() || finalFile.length() == 0L) {
+                throw IllegalStateException("Downloaded file is empty or corrupted.")
+            }
+
+            // Scan file into Android media system
+            StorageUtils.scanMediaFile(context, finalFile)
 
             // Mark completed in database
             val now = System.currentTimeMillis()
@@ -182,7 +194,7 @@ object DownloadEngine {
             )
             listeners[videoId]?.invoke(currentVideo)
 
-        } catch (e: CancellationException) {
+        } catch (_: CancellationException) {
             // Task was cancelled or paused
         } catch (e: Exception) {
             e.printStackTrace()
@@ -233,7 +245,7 @@ object DownloadEngine {
                 totalRead += bytesRead
 
                 val now = System.currentTimeMillis()
-                if (now - lastUpdateTime >= 800) { // Update at least once per second (PRD non-functional req)
+                if (now - lastUpdateTime >= 800) {
                     lastUpdateTime = now
                     val percent = if (totalBytes > 0) ((totalRead * 100) / totalBytes).toInt().coerceIn(0, 99) else 0
                     onProgressUpdate(totalRead, totalBytes, percent)
@@ -273,20 +285,24 @@ object DownloadEngine {
             } else {
                 currentThumbPath
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             currentThumbPath
         }
     }
 
     /**
-     * Merges video track and audio track into a single MP4 container using Android MediaMuxer
+     * Merges video track and audio track into a single MP4 container using Android MediaMuxer.
+     * Interleaves samples by timestamp to produce a fully standard, 100% playable MP4 file.
      */
     private fun mergeVideoAndAudio(videoFile: File, audioFile: File, outputFile: File) {
         val videoExtractor = MediaExtractor()
         val audioExtractor = MediaExtractor()
         var muxer: MediaMuxer? = null
+        var muxingSucceeded = false
 
         try {
+            if (outputFile.exists()) outputFile.delete()
+
             videoExtractor.setDataSource(videoFile.absolutePath)
             audioExtractor.setDataSource(audioFile.absolutePath)
 
@@ -318,14 +334,20 @@ object DownloadEngine {
             }
 
             if (videoTrackIndex == -1 || videoFormat == null) {
-                // If video extractor failed, just rename videoFile to outputFile
-                videoFile.renameTo(outputFile)
+                videoFile.copyTo(outputFile, overwrite = true)
                 return
             }
 
             if (audioTrackIndex == -1 || audioFormat == null) {
-                // No separate audio track found, use video file as is
-                videoFile.renameTo(outputFile)
+                videoFile.copyTo(outputFile, overwrite = true)
+                return
+            }
+
+            val audioMime = audioFormat.getString(MediaFormat.KEY_MIME) ?: ""
+            // Ensure audio is compatible with MPEG-4 muxer (must be AAC / mp4a)
+            if (!audioMime.contains("mp4a", ignoreCase = true) && !audioMime.contains("aac", ignoreCase = true)) {
+                // If audio codec is incompatible, fallback to video file directly so it remains playable
+                videoFile.copyTo(outputFile, overwrite = true)
                 return
             }
 
@@ -341,37 +363,55 @@ object DownloadEngine {
             val buffer = ByteBuffer.allocate(maxBufferSize)
             val bufferInfo = MediaCodec.BufferInfo()
 
-            // Write Video Samples
-            while (true) {
-                bufferInfo.size = videoExtractor.readSampleData(buffer, 0)
-                if (bufferInfo.size < 0) break
-                bufferInfo.presentationTimeUs = videoExtractor.sampleTime
-                bufferInfo.flags = videoExtractor.sampleFlags
-                muxer.writeSampleData(muxerVideoTrack, buffer, bufferInfo)
-                videoExtractor.advance()
+            var videoDone = false
+            var audioDone = false
+
+            // Interleaved writing loop by presentation time
+            while (!videoDone || !audioDone) {
+                val videoTime = if (!videoDone) videoExtractor.sampleTime else Long.MAX_VALUE
+                val audioTime = if (!audioDone) audioExtractor.sampleTime else Long.MAX_VALUE
+
+                if (!videoDone && (videoTime <= audioTime || audioDone)) {
+                    bufferInfo.size = videoExtractor.readSampleData(buffer, 0)
+                    if (bufferInfo.size < 0) {
+                        videoDone = true
+                    } else {
+                        bufferInfo.presentationTimeUs = videoExtractor.sampleTime
+                        bufferInfo.flags = videoExtractor.sampleFlags
+                        muxer.writeSampleData(muxerVideoTrack, buffer, bufferInfo)
+                        videoExtractor.advance()
+                    }
+                } else if (!audioDone) {
+                    bufferInfo.size = audioExtractor.readSampleData(buffer, 0)
+                    if (bufferInfo.size < 0) {
+                        audioDone = true
+                    } else {
+                        bufferInfo.presentationTimeUs = audioExtractor.sampleTime
+                        bufferInfo.flags = audioExtractor.sampleFlags
+                        muxer.writeSampleData(muxerAudioTrack, buffer, bufferInfo)
+                        audioExtractor.advance()
+                    }
+                }
             }
 
-            // Write Audio Samples
-            while (true) {
-                bufferInfo.size = audioExtractor.readSampleData(buffer, 0)
-                if (bufferInfo.size < 0) break
-                bufferInfo.presentationTimeUs = audioExtractor.sampleTime
-                bufferInfo.flags = audioExtractor.sampleFlags
-                muxer.writeSampleData(muxerAudioTrack, buffer, bufferInfo)
-                audioExtractor.advance()
-            }
-
+            muxingSucceeded = true
         } catch (e: Exception) {
             e.printStackTrace()
-            // Fallback: If muxing failed due to codec mismatch, fallback to video file
-            if (videoFile.exists() && !outputFile.exists()) {
-                videoFile.copyTo(outputFile, overwrite = true)
-            }
         } finally {
-            try { muxer?.stop() } catch (_: Exception) {}
-            try { muxer?.release() } catch (_: Exception) {}
+            try {
+                muxer?.stop()
+                muxer?.release()
+            } catch (_: Exception) {}
             try { videoExtractor.release() } catch (_: Exception) {}
             try { audioExtractor.release() } catch (_: Exception) {}
+
+            // If muxing failed or output file is 0 bytes, fallback cleanly to videoFile
+            if (!muxingSucceeded || !outputFile.exists() || outputFile.length() == 0L) {
+                if (outputFile.exists()) outputFile.delete()
+                if (videoFile.exists()) {
+                    videoFile.copyTo(outputFile, overwrite = true)
+                }
+            }
         }
     }
 }

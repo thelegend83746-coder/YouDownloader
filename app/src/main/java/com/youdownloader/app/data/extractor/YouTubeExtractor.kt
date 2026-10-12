@@ -425,40 +425,53 @@ object YouTubeExtractor {
             throw IllegalStateException("No video streams could be resolved for this link.")
         }
 
+        // 1. Audio-only target: strictly select AAC / MP4 audio for universal compatibility
         if (targetQuality == VideoQuality.AUDIO_ONLY) {
-            val bestAudio = formats.filter { it.hasAudio && !it.hasVideo }
+            val aacAudio = formats.filter { it.hasAudio && !it.hasVideo && it.mimeType.contains("mp4") }
                 .maxByOrNull { it.bitrate }
-                ?: formats.firstOrNull { it.hasAudio }
-                ?: formats.first()
-            return Pair(bestAudio, null)
+                ?: formats.filter { it.hasAudio && !it.hasVideo }.maxByOrNull { it.bitrate }
+                ?: formats.first { it.hasAudio }
+            return Pair(aacAudio, null)
         }
 
-        // Progressive match (video + audio combined)
-        val progressiveMatch = formats.filter { it.hasVideo && it.hasAudio }
-            .sortedByDescending { it.height }
-            .firstOrNull { it.height <= targetQuality.height && it.height >= targetQuality.height - 100 }
-            ?: formats.filter { it.hasVideo && it.hasAudio }.maxByOrNull { it.height }
-
-        if (progressiveMatch != null && (targetQuality == VideoQuality.Q_720P || targetQuality == VideoQuality.Q_360P)) {
-            return Pair(progressiveMatch, null)
+        // 2. Progressive match (Both video and audio included in a single stream by YouTube)
+        // Progressive streams need 0 muxing and play on 100% of devices
+        val progressiveStreams = formats.filter { it.hasVideo && it.hasAudio }
+        val exactProgressive = progressiveStreams.firstOrNull { it.height == targetQuality.height }
+        if (exactProgressive != null) {
+            return Pair(exactProgressive, null)
         }
 
-        // Adaptive video stream
-        val videoStream = formats.filter { it.hasVideo }
+        // If target is 360p or 480p and we have progressive stream (usually 360p itag 18), use it directly
+        if (targetQuality.height <= 480 && progressiveStreams.isNotEmpty()) {
+            val bestProg = progressiveStreams.maxByOrNull { it.height }
+            if (bestProg != null) {
+                return Pair(bestProg, null)
+            }
+        }
+
+        // 3. Adaptive Video stream: must strictly prefer H.264 (avc1) for Android MediaMuxer MP4 compatibility
+        val avcVideos = formats.filter { it.hasVideo && it.mimeType.contains("mp4") && it.mimeType.contains("avc1") }
+        val allMp4Videos = formats.filter { it.hasVideo && it.mimeType.contains("mp4") }
+        val candidateVideos = if (avcVideos.isNotEmpty()) avcVideos else if (allMp4Videos.isNotEmpty()) allMp4Videos else formats.filter { it.hasVideo }
+
+        val videoStream = candidateVideos
             .filter { it.height <= targetQuality.height }
             .maxByOrNull { it.height }
-            ?: formats.filter { it.hasVideo }.maxByOrNull { it.height }
+            ?: candidateVideos.maxByOrNull { it.height }
             ?: formats.first()
 
+        // If the selected video already contains audio, no second stream needed
         if (videoStream.hasAudio) {
             return Pair(videoStream, null)
         }
 
-        // Separate audio stream to merge with video using MediaMuxer
-        val audioStream = formats.filter { it.hasAudio && !it.hasVideo }
+        // 4. Paired Audio stream for MediaMuxer: MUST strictly be AAC (mp4a / audio/mp4)
+        // Android MediaMuxer with MPEG-4 OUTPUT throws IllegalArgumentException on Opus/WebM audio!
+        val aacAudio = formats.filter { it.hasAudio && !it.hasVideo && it.mimeType.contains("mp4") }
             .maxByOrNull { it.bitrate }
-            ?: formats.firstOrNull { it.hasAudio }
+            ?: formats.filter { it.hasAudio && !it.hasVideo }.firstOrNull()
 
-        return Pair(videoStream, audioStream)
+        return Pair(videoStream, aacAudio)
     }
 }

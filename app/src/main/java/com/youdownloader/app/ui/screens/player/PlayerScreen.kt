@@ -2,6 +2,7 @@ package com.youdownloader.app.ui.screens.player
 
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.net.Uri
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
@@ -12,25 +13,32 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.youdownloader.app.ui.components.ConfirmDeleteDialog
 import com.youdownloader.app.ui.theme.RedPrimary
 import com.youdownloader.app.ui.theme.StatusError
@@ -56,6 +64,7 @@ fun PlayerScreen(
     var showControls by remember { mutableStateOf(true) }
     var isFullscreen by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var playbackError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(videoId) {
         viewModel.loadVideo(videoId)
@@ -73,19 +82,22 @@ fun PlayerScreen(
         val currentVideo = video
         if (currentVideo != null && currentVideo.filePath.isNotBlank()) {
             val file = File(currentVideo.filePath)
-            if (file.exists()) {
-                val mediaItem = MediaItem.fromUri(file.toURI().toString())
+            if (file.exists() && file.length() > 0L) {
+                playbackError = null
+                val mediaItem = MediaItem.fromUri(Uri.fromFile(file))
                 exoPlayer.setMediaItem(mediaItem)
-                // Resume from saved position
                 if (currentVideo.lastPositionMs > 0L) {
                     exoPlayer.seekTo(currentVideo.lastPositionMs)
                 }
                 exoPlayer.prepare()
+                exoPlayer.play()
+            } else {
+                playbackError = "Media file not found or corrupted on disk."
             }
         }
     }
 
-    // Track playback state & position
+    // Track playback state & errors
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
@@ -95,7 +107,12 @@ fun PlayerScreen(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
                     totalDuration = exoPlayer.duration.coerceAtLeast(0L)
+                    playbackError = null
                 }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                playbackError = "Playback error: ${error.localizedMessage ?: "Codec or container error"}"
             }
         }
         exoPlayer.addListener(listener)
@@ -117,13 +134,16 @@ fun PlayerScreen(
         }
     }
 
-    // Auto-hide controls after 3 seconds
+    // Auto-hide controls after 3.5 seconds
     LaunchedEffect(showControls, isPlaying) {
         if (showControls && isPlaying) {
             delay(3500L)
             showControls = false
         }
     }
+
+    val isAudio = video?.filePath?.endsWith(".m4a", ignoreCase = true) == true ||
+            video?.quality?.contains("Audio", ignoreCase = true) == true
 
     Box(
         modifier = Modifier
@@ -136,20 +156,103 @@ fun PlayerScreen(
                 showControls = !showControls
             }
     ) {
-        // ExoPlayer View
-        AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    player = exoPlayer
-                    useController = false // Custom Compose controls
-                    layoutParams = FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
+        // ExoPlayer View (for Video) or Thumbnail Artwork (for Audio)
+        if (!isAudio) {
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        player = exoPlayer
+                        useController = false
+                        layoutParams = FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            // Audio mode cover
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(video?.thumbnailPath?.ifBlank { "https://img.youtube.com/vi/${video?.youtubeId}/hqdefault.jpg" })
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(240.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                )
+                Spacer(modifier = Modifier.height(24.dp))
+                Text(
+                    text = video?.title ?: "Playing Audio",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    maxLines = 2
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = video?.channel ?: "Audio Track",
+                    color = Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        // Playback Error Banner with Fallback External Player button
+        if (playbackError != null) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(24.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = StatusError, modifier = Modifier.size(40.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Unable to play in built-in player",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = playbackError ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Button(
+                        onClick = {
+                            video?.let { v ->
+                                StorageUtils.openVideoWithExternalPlayer(context, File(v.filePath))
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = RedPrimary)
+                    ) {
+                        Icon(Icons.Default.OpenInNew, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Open in External Player (VLC / MX Player)")
+                    }
                 }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+            }
+        }
 
         // Overlay Controls
         AnimatedVisibility(
@@ -163,7 +266,7 @@ fun PlayerScreen(
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.5f))
             ) {
-                // Top Header (Back, Title, Share, Delete)
+                // Top Header (Back, Title, Open In External Player, Share, Delete)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -184,7 +287,7 @@ fun PlayerScreen(
                             .padding(horizontal = 8.dp)
                     ) {
                         Text(
-                            text = video?.title ?: "Playing Video",
+                            text = video?.title ?: "Playing Media",
                             color = Color.White,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
@@ -196,6 +299,15 @@ fun PlayerScreen(
                             color = Color.White.copy(alpha = 0.7f),
                             style = MaterialTheme.typography.labelSmall
                         )
+                    }
+
+                    // Open with External App (VLC / MX Player / System Player)
+                    IconButton(onClick = {
+                        video?.let { v ->
+                            StorageUtils.openVideoWithExternalPlayer(context, File(v.filePath))
+                        }
+                    }) {
+                        Icon(Icons.Default.OpenInNew, contentDescription = "Open in External Player", tint = Color.White)
                     }
 
                     // Share button
@@ -214,7 +326,7 @@ fun PlayerScreen(
                     }
                 }
 
-                // Center Playback Buttons (Rewind, Play/Pause, Fast Forward)
+                // Center Playback Buttons (Rewind 10s, Play/Pause, Forward 10s)
                 Row(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalArrangement = Arrangement.spacedBy(28.dp),
@@ -301,19 +413,21 @@ fun PlayerScreen(
                             fontWeight = FontWeight.Medium
                         )
 
-                        IconButton(onClick = {
-                            isFullscreen = !isFullscreen
-                            if (isFullscreen) {
-                                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                            } else {
-                                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                        if (!isAudio) {
+                            IconButton(onClick = {
+                                isFullscreen = !isFullscreen
+                                if (isFullscreen) {
+                                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                                } else {
+                                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                }
+                            }) {
+                                Icon(
+                                    imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                    contentDescription = "Fullscreen",
+                                    tint = Color.White
+                                )
                             }
-                        }) {
-                            Icon(
-                                imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                                contentDescription = "Fullscreen",
-                                tint = Color.White
-                            )
                         }
                     }
                 }
